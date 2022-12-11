@@ -42,10 +42,16 @@
   - [Realdash](#3-realdash)
   - [SavvyCAN](#4-savvycan)
   - [webCAN](http://webcan.meatpi.com)
+- [SocketCAN](#socketcan)
+  - [WiFi](#1-wifi)
+  - [USB](#2-usb)
+- [ELM327 OBD2 Protocol](#elm327-obd2-protocol)
 - [MQTT](#mqtt)
   - [Status](#1-status)
   - [Receive Frames](#2-receive-frames)
   - [Transmit Frames](#3-transmit-frames)
+- [Home Assistant](#home-assistant)
+
 - [Firmware Update](#firmware-update)
   - [OTA](#1-ota)
   - [USB](#2-usb)
@@ -188,6 +194,46 @@ WiCAN can connect with RealDash using WiFi or BLE. The Protocol and CAN bitrate 
 5. Click Create New Connection.
 6. Then select "Enable Bus" checkbox.
 
+# SocketCAN
+
+## 1. WIFi:
+
+Change to protocol in the device configuration page to "slcan", then create a virtual serial port over TCP on your Linux machine. If WiCAN is connected to your home network replace "192.168.80.1" with device IP.
+
+```
+sudo socat pty,link=/dev/netcan0,raw tcp:192.168.80.1:3333 &
+sudo slcand -o -c -s8 /dev/netcan0 can0
+sudo ifconfig can0 txqueuelen 1000
+sudo ifconfig can0 up
+```
+
+## 2. USB
+
+```
+sudo slcand -o -s6 -t sw -S 4000000 /dev/ttyACM0 can0
+sudo ifconfig can0 txqueuelen 1000
+sudo ifconfig can0 up
+```
+# ELM327 OBD2 Protocol
+
+1. Go to configuration webpage.
+2. Select the baudrate
+3. Set "Port Type" = TCP
+4. Set "Protocol" = elm327
+5. Enable BLE if needed. [Note](https://github.com/meatpiHQ/wican-fw#important-notes)
+6. Click submit changes.
+
+### OBD2 in RealDash 
+
+1. Go to garage then click on the dashboard.
+2. Click Add connection.
+3. Select Adapter ``` OBD2 ```
+4. Select Bluetooth or WiFi
+5. If WiFi fill in the IP 192.168.80.1 and port 3333. 
+6. Click on ``` OBD2 PROTOCOL ``` and select your car protocol, (11 bit ID, 500Kbit) or (11 bit ID, 250Kbit)
+7. Activate ``` Request Only First Reply ```
+8. Click Done.
+
 # MQTT
 
 Currently only non-secure MQTT is supported, it's highly recommended that you only use it with local MQTT broker and not use public brokers otherwise your CAN bus might be publicly exposed.
@@ -225,6 +271,52 @@ To receive CAN frames simply subscribe to the receive topic. Each MQTT message m
 {"bus":0,"type":"tx","frame":[{"id":123,"dlc":8,"rtr":false,"extd":true,"data":[1,2,3,4,5,6,7,8]},{"id":124,"dlc":8,"rtr":false,"extd":true,"data":[1,2,3,4,5,6,7,8]}]}
 ### - Transmit Message JSON Schema:
 ![image](https://user-images.githubusercontent.com/94690098/196187228-3923204e-1b87-4ece-bb72-406e338a5831.png)
+
+# Home Assistant
+WiCAN is able to send CAN bus messages to Home Assistant using MQTT protocol. I found that using Node-RED is the simplest way to create automation based on the CAN messages received. This short video highlights some of the steps https://youtu.be/oR5HQIUPR9I
+
+1. Install Home Assistant [Mosquitto broker add-on](https://github.com/home-assistant/addons/blob/master/mosquitto/DOCS.md)
+2. Create Home Assistant new user account for WiCAN. These user credentials will be used to set up the MQTT setting for WiCAN.
+3. Connect to WiCAN access point WiCAN_xxxxxxxxxxxx then, using a web browser, go to http://192.168.80.1/
+4. Set the "Mode" to Ap+Station
+5. Fill in your Home WiFi network SSID and Password.
+6. Enable [MQTT](#mqtt) and fill in the Home Assistant credentials created in step 2
+7. Install Home Assistant [Node-RED Add-on](https://github.com/hassio-addons/addon-node-red)
+8. Download [wican_example_flow.json](https://github.com/meatpiHQ/wican-fw/blob/main/ha/wican_example_flow.json) and replace **device_id** with your WiCAN ID.
+9. Open Node-RED Add-on and import the edited "wican_example_flow.json"
+10. Double click on the subsction Node and edit the server fill in MQTT broker IP address and credentials created in step 2
+11. Click deploy.
+12. To create a new MQTT sensor, you’ll need to edit the configuration.yaml file by adding the following lines:
+
+```
+mqtt:
+  sensor:
+    - name: "Amb Temp"
+      state_topic: "CAR1/Amb_Temp"
+      unit_of_measurement: "C"
+      value_template: "{{ value_json.amb_temp }}"
+    - name: "Fuel Level"
+      state_topic: "CAR1/Fuel_Level"
+      unit_of_measurement: "%"
+      value_template: "{{ value_json.fuel_level }}"
+```
+11. Restart Home assistant
+12. After restart go to dashboard and Add new Card entity.
+
+## Workflow summery
+
+In this example we've got one Node subscribed to topic ``` wican/device_id/status ```, when WiCAN connects to the local network it will publish ``` {"status": "online"}  ```. Once the Node function ``` Send Get  Amb Temp req ``` receives online status it will send a OBD2 request to get the ambient temperature. The OBD2 request message looks like this:
+
+``` { "bus": "0", "type": "tx", "frame": [{ "id": 2015, "dlc": 8, "rtr": false, "extd": false, "data": [2, 1, 70, 170, 170, 170, 170, 170] }] } ```
+
+Frame ID : 2015 or 0x7DF
+PID: 70 or 0x46
+
+Here is a good [reference](https://www.csselectronics.com/pages/obd2-pid-table-on-board-diagnostics-j1979) on how to construct a PID request. Note select DEC from drop down list.
+
+We have another Node subscribed to topic ``` wican/device_id/can/rx ```, once the car ECU responds to the request the function ``` Parse Amb Temp RSP ``` will parse the message and publish a message to topic ``` CAR1/Amb_Temp ```. Notice that when you edited ``` configuration.yaml ``` file create an MQTT Entity that subscribes to ``` CAR1/Amb_Temp ``` and expects a message ``` { value_json.amb_temp } ``` with unit_of_measurement C.
+
+![image](https://user-images.githubusercontent.com/94690098/204269457-32f6e6b5-c9be-44d0-b41c-36fa61b82258.png)
 
 
 # Firmware Update
