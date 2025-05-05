@@ -37,13 +37,14 @@
 #include "can.h"
 #include "config_server.h"
 #include "gvret.h"
+#include "comm_server.h"
 
 #define TAG 		__func__
 
 static SystemSettings SysSettings;
 static EEPROMSettings settings;
 
-static uint8_t transmitBuffer[WIFI_BUFF_SIZE];
+static uint8_t *transmitBuffer = NULL;
 static uint16_t transmitBufferLength = 0;
 
 static SemaphoreHandle_t xgvert_tmr_semaphore;
@@ -62,14 +63,14 @@ void gvert_tmr_set_start(void)
 	xSemaphoreGive(xgvert_tmr_semaphore);
 }
 
-uint32_t gvert_tmr_get()
+int64_t gvert_tmr_get()
 {
 	int64_t ret = 0;
 	xSemaphoreTake(xgvert_tmr_semaphore, portMAX_DELAY);
 	ret = esp_timer_get_time() - gvert_tmr_start_time;
 	xSemaphoreGive(xgvert_tmr_semaphore);
 
-	return (uint32_t)ret;
+	return (int64_t)ret;
 }
 
 static void periodic_timer_callback(void* arg)
@@ -92,7 +93,7 @@ uint8_t checksumCalc(uint8_t *buffer, int length)
 void gvert_setup(EEPROMSettings *settings)
 {
 	can_disable();
-	ESP_LOGI(__func__, "settings->CAN0Speed: %u", settings->CAN0Speed);
+	ESP_LOGI(__func__, "settings->CAN0Speed: %lu", settings->CAN0Speed);
 	for(uint8_t i = 0; i < sizeof(can_speed)/sizeof(uint32_t); i++)
 	{
 		if(can_speed[i] == settings->CAN0Speed)
@@ -728,17 +729,28 @@ static void gvret_broadcast_task(void *pvParameters)
 	while(1)
 	{
 		vTaskDelay(pdMS_TO_TICKS(1000));
-        int err = sendto(sock, buff, 4, 0, (struct sockaddr *)&broadcastAddr, sizeof(broadcastAddr));
-        if (err < 0) {
-            ESP_LOGE(TAG, "Error occurred during sending: errno %d", errno);
-            break;
-        }
+		if(!tcp_port_open())
+		{
+			int err = sendto(sock, buff, 4, 0, (struct sockaddr *)&broadcastAddr, sizeof(broadcastAddr));
+			if (err < 0)
+			{
+				ESP_LOGE(TAG, "Error occurred during sending: errno %d", errno);
+//				break;
+			}
+		}
 	}
 
 }
 void gvret_init(void (*send_to_host)(char*, uint32_t, QueueHandle_t *q))
 {
 	gvret_response = send_to_host;
+
+    transmitBuffer = (uint8_t*)malloc(WIFI_BUFF_SIZE);
+    if (!transmitBuffer)
+	{
+        ESP_LOGE(TAG, "Failed to allocate transmit buffer");
+        return;
+    }
 
     const esp_timer_create_args_t periodic_timer_args =
     {

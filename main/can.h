@@ -23,9 +23,6 @@
 #define __CAN_H__
 #include "driver/twai.h"
 
-#define TX_GPIO_NUM             	0
-#define RX_GPIO_NUM             	3
-#define CAN_STDBY_GPIO_NUM			6
 
 #define CAN_5K				0
 #define CAN_10K				1
@@ -69,5 +66,5 @@ uint8_t can_is_silent(void);
 bool can_is_enabled(void);
 uint8_t can_get_bitrate(void);
 uint32_t can_msgs_to_rx(void);
-
+void can_flush_rx(void);
 #endif

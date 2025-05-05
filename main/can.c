@@ -33,7 +33,7 @@
 #include "lwip/sockets.h"
 #include "driver/twai.h"
 #include "can.h"
-
+#include "hw_config.h"
 
 static EventGroupHandle_t s_can_event_group = NULL;
 #define CAN_ENABLE_BIT 		BIT0
@@ -41,8 +41,9 @@ static EventGroupHandle_t s_can_event_group = NULL;
 #define TAG 		__func__
 enum bus_state
 {
-    OFF_BUS,
-    ON_BUS
+    OFF_BUS = 0,
+    ON_BUS = 1,
+	END_BUS
 };
 static const twai_timing_config_t twai_timing_config[] = {
 	{.brp = 800, .tseg_1 = 15, .tseg_2 = 4, .sjw = 3, .triple_sampling = false},
@@ -67,7 +68,7 @@ static uint8_t datarate = CAN_500K;
 //static uint8_t bus_state = OFF_BUS;
 //static uint32_t mask = 0xFFFFFFFF;
 //static uint32_t filter = 0;
-static can_cfg_t can_cfg;
+static can_cfg_t can_cfg = {.bus_state = END_BUS, .auto_bitrate = 0};
 
 #define TWAI_CONFIG(tx_io_num, rx_io_num, op_mode) {.mode = op_mode, .tx_io = tx_io_num, .rx_io = rx_io_num,        \
                                                                     .clkout_io = TWAI_IO_UNUSED, .bus_off_io = TWAI_IO_UNUSED,      \
@@ -119,7 +120,7 @@ void can_enable(void)
 	{
 		return;
 	}
-	gpio_set_level(CAN_STDBY_GPIO_NUM, 0);
+	
 	twai_timing_config_t *t_config;
 	t_config = (twai_timing_config_t *)&twai_timing_config[datarate];
 //	t_config = (twai_timing_config_t *)&twai_timing_config[CAN_500K];
@@ -144,6 +145,7 @@ void can_enable(void)
 	twai_clear_receive_queue();
 	can_unblock();
 	can_cfg.bus_state = ON_BUS;
+	gpio_set_level(CAN_STDBY_GPIO_NUM, 0);
 }
 
 void can_disable(void)
@@ -152,11 +154,14 @@ void can_disable(void)
 	{
 		return;
 	}
-	gpio_set_level(CAN_STDBY_GPIO_NUM, 1);
-	can_block();
-	ESP_ERROR_CHECK(twai_stop());
-	ESP_ERROR_CHECK(twai_driver_uninstall());
-	can_cfg.bus_state = OFF_BUS;
+	else if(can_cfg.bus_state == ON_BUS)
+	{
+		gpio_set_level(CAN_STDBY_GPIO_NUM, 1);
+		can_block();
+		twai_stop();
+		twai_driver_uninstall();
+		can_cfg.bus_state = OFF_BUS;
+	}
 }
 
 void can_set_silent(uint8_t flag)
@@ -256,11 +261,14 @@ void can_init(uint8_t bitrate)
 		xTimerStop( xCAN_EN_Timer, 0 );
 	}
 
+	can_cfg.auto_bitrate = 0;
+
 	if(bitrate == CAN_AUTO)
 	{
-		can_cfg.auto_bitrate = 1;
-		can_cfg.bus_state = OFF_BUS;
-		can_set_bitrate(CAN_100K);
+		bitrate = CAN_500K;
+		// can_cfg.auto_bitrate = 1;
+		// can_cfg.bus_state = OFF_BUS;
+		// can_set_bitrate(CAN_100K);
 	}
 }
 
@@ -278,49 +286,49 @@ esp_err_t can_receive(twai_message_t *message, TickType_t ticks_to_wait)
 							pdFALSE,
 							portMAX_DELAY);
 
-	if(can_cfg.auto_bitrate)
-	{
-		ret = twai_receive(message, 0);
+	// if(can_cfg.auto_bitrate)
+	// {
+	// 	ret = twai_receive(message, 0);
 
-		if(ret == ESP_OK)
-		{
-			rx_error = 0;
-			bitrate_found = 1;
-			if(bitrate_found == 0)
-			{
-				bitrate_found = 1;
-				if(store_silent_flag != can_cfg.silent)
-				{
-					can_cfg.silent = store_silent_flag;
-					can_disable();
-					can_enable();
-				}
-			}
-		}
-		else
-		{
-			rx_error++;
-			if(bitrate_found == 1)
-			{
-				bitrate_found = 0;
-				store_silent_flag = can_cfg.silent;
-			}
+	// 	if(ret == ESP_OK)
+	// 	{
+	// 		rx_error = 0;
+	// 		bitrate_found = 1;
+	// 		if(bitrate_found == 0)
+	// 		{
+	// 			bitrate_found = 1;
+	// 			if(store_silent_flag != can_cfg.silent)
+	// 			{
+	// 				can_cfg.silent = store_silent_flag;
+	// 				can_disable();
+	// 				can_enable();
+	// 			}
+	// 		}
+	// 	}
+	// 	else
+	// 	{
+	// 		rx_error++;
+	// 		if(bitrate_found == 1)
+	// 		{
+	// 			bitrate_found = 0;
+	// 			store_silent_flag = can_cfg.silent;
+	// 		}
 
-			if(rx_error >=120)
-			{
-				ESP_LOGW(TAG, "try differnt baudrate");
-				rx_error = 0;
+	// 		if(rx_error >=120)
+	// 		{
+	// 			ESP_LOGW(TAG, "try differnt baudrate");
+	// 			rx_error = 0;
 
-				can_disable();
-				can_cfg.silent = 1;
-				datarate++;
-				datarate %= (CAN_1000K+1);
-				can_enable();
-			}
-		}
-		return ret;
-	}
-	else
+	// 			can_disable();
+	// 			can_cfg.silent = 1;
+	// 			datarate++;
+	// 			datarate %= (CAN_1000K+1);
+	// 			can_enable();
+	// 		}
+	// 	}
+	// 	return ret;
+	// }
+	// else
 	{
 		return twai_receive(message, ticks_to_wait);
 	}
@@ -352,6 +360,15 @@ bool can_is_enabled(void)
 //	EventBits_t uxBits = xEventGroupGetBits(s_can_event_group);
 //	return (uxBits & CAN_ENABLE_BIT);
 }
+
+void can_flush_rx(void)
+{
+    if (can_cfg.bus_state == ON_BUS) 
+	{
+        twai_clear_receive_queue();
+    }
+}
+
 
 uint32_t can_msgs_to_rx(void)
 {

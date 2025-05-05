@@ -52,3 +52,12 @@ modules.order
 Module.symvers
 Mkfile.old
 dkms.conf
+
+# docs
+docs/.nuxt
+docs/node_modules
+
+#Vehicle Profiles
+.vehicle_profiles/node_modules/
+.vscode/
+managed_components/
